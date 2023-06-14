@@ -35,6 +35,17 @@ fn main() {
             {
                 let runtime = Builder::new_current_thread().enable_all().build().unwrap();
                 LocalSet::new().block_on(&runtime, async_main(*spawn_method, *drop_method));
+
+                // NOTE: this prevents any panics from occurring:
+                // runtime.block_on(async {
+                //     LocalSet::new()
+                //         .run_until(async_main(*spawn_method, *drop_method))
+                //         .await;
+                // });
+
+                // NOTE: interestingly, this doesn't though:
+                // runtime
+                //     .block_on(LocalSet::new().run_until(async_main(*spawn_method, *drop_method)));
             }
 
             println!();
