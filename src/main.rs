@@ -1,4 +1,4 @@
-use std::{env, time::Duration};
+use std::time::Duration;
 
 use tokio::{
     runtime::Builder,
@@ -7,15 +7,42 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-fn main() {
-    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
-
-    LocalSet::new().block_on(&runtime, async_main());
-
-    println!("runtime exited");
+#[derive(Debug, Copy, Clone)]
+enum SpawnMethod {
+    Spawn,
+    SpawnLocal,
+    Select,
 }
 
-async fn async_main() {
+#[derive(Debug, Copy, Clone)]
+enum DropMethod {
+    Spawn,
+    SpawnLocal,
+}
+
+fn main() {
+    for spawn_method in &[
+        SpawnMethod::Select,
+        SpawnMethod::Spawn,
+        SpawnMethod::SpawnLocal,
+    ] {
+        for drop_method in &[DropMethod::Spawn, DropMethod::SpawnLocal] {
+            println!(
+                "SpawnMethod::{:?} + DropMethod::{:?}",
+                spawn_method, drop_method
+            );
+
+            {
+                let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+                LocalSet::new().block_on(&runtime, async_main(*spawn_method, *drop_method));
+            }
+
+            println!();
+        }
+    }
+}
+
+async fn async_main(spawn_method: SpawnMethod, drop_method: DropMethod) {
     // cancellation token - used to stop the runtime
     let cancel = CancellationToken::new();
 
@@ -23,51 +50,47 @@ async fn async_main() {
     task::spawn_local({
         let cancel = cancel.clone();
         async move {
-            println!("cancelling runtime after 1 second...");
-            sleep(Duration::from_secs(1)).await;
+            sleep(Duration::from_millis(10)).await;
             cancel.cancel();
         }
     });
 
-    match env::args().skip(1).next().unwrap().as_str() {
+    let fut = spawn_task(drop_method);
+    match spawn_method {
         // NOTE: this one panics on drop
-        "spawn_local" => {
-            task::spawn_local(spawn_task());
+        SpawnMethod::SpawnLocal => {
+            task::spawn_local(fut);
             cancel.cancelled().await;
         }
         // NOTE: this one *does not panic* on drop
-        "spawn" => {
-            task::spawn(spawn_task());
+        SpawnMethod::Spawn => {
+            task::spawn(fut);
             cancel.cancelled().await;
         }
         // NOTE: this one *does not panic* on drop
-        "select" => {
+        SpawnMethod::Select => {
             tokio::select! {
-                _ = spawn_task() => {},
+                _ = fut => {},
                 _ = cancel.cancelled() => {},
             };
-        }
-        _ => {
-            println!("Pass either 'select', 'spawn' or 'spawn_local'");
-            std::process::exit(1);
         }
     };
 }
 
-struct Foo;
+struct Foo(DropMethod);
 
 impl Drop for Foo {
     fn drop(&mut self) {
-        task::spawn(async {
-            println!("dropping");
-            sleep(Duration::from_millis(100)).await;
-            println!("dropped");
-        });
+        // NOTE: this future is never run anyway
+        let drop_future = async { unreachable!() };
+        match self.0 {
+            DropMethod::Spawn => task::spawn(drop_future),
+            DropMethod::SpawnLocal => task::spawn_local(drop_future),
+        };
     }
 }
 
-async fn spawn_task() {
-    let _foo = Foo;
-
+async fn spawn_task(drop_method: DropMethod) {
+    let _foo = Foo(drop_method);
     futures::future::pending::<()>().await;
 }
